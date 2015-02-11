@@ -1,19 +1,19 @@
 ﻿using UnityEngine;
-#if UNITY_EDITOR
-using UnityEditor;
-using System.IO;
-#endif
 using System.Collections;
 using System.Collections.Generic;
 using System.Linq;
 using FarseerPhysics.Common.PolygonManipulation;
 using FarseerPhysics.Common;
+#if UNITY_EDITOR
+using UnityEditor;
+using System.IO;
+#endif
 
 [ExecuteInEditMode]
 public class MeshCreator : EditorWindow {
     private SpriteRenderer spriteRenderer;
 
-    private const float baseSelectDistance = 0.3f;   // Square distance actually
+    private float baseSelectDistance = 0.3f;   // Square distance actually
 
     private Color ghostSegmentColor = Color.blue;
     private Color nearSegmentColor = Color.cyan;
@@ -27,45 +27,146 @@ public class MeshCreator : EditorWindow {
 
     private int selectedVertex = -1;
 
+    private float simplify = 1f;
+    private string meshName = "GeneratedMesh";
+    private bool previewMode = false;
+
+    private Mesh generatedMesh = null;
+    private Vector3[] meshVertices = null;
+    private bool meshDirty = true;
+
+    private GameObject previewObject = null;
+    private MeshFilter previewMF = null;
 
     [MenuItem("Sprites And Bones/Mesh Creator")]
     protected static void ShowSkinMeshEditor() {
         var wnd = GetWindow<MeshCreator>();
         wnd.title = "Mesh Creator";
+
+
+        if(Selection.activeGameObject != null) {
+            GameObject o = Selection.activeGameObject;
+            wnd.spriteRenderer = o.GetComponent<SpriteRenderer>();
+            wnd.meshName = o.name;
+        }
+
         wnd.Show();
 
         SceneView.onSceneGUIDelegate += wnd.OnSceneGUI;
     }
 
-    public void OnGUI() {
+    public void OnGUI()
+    {
         GUILayout.Label("Sprite", EditorStyles.boldLabel);
 
-        EditorGUI.BeginChangeCheck();
         spriteRenderer = (SpriteRenderer)EditorGUILayout.ObjectField(spriteRenderer, typeof(SpriteRenderer), true);
-        if(Selection.activeGameObject != null) {
-            GameObject o = Selection.activeGameObject;
-            spriteRenderer = o.GetComponent<SpriteRenderer>();
+
+
+        if (spriteRenderer == null) return;
+
+        #region Auto mesh creation buttons
+        GUI.enabled = !previewMode;
+
+        simplify = EditorGUILayout.FloatField("Vertex Dist.", simplify);
+
+        if (GUILayout.Button("Generate Polygon from Texture"))
+        {
+            Rect r = spriteRenderer.sprite.rect;
+            Texture2D tex = spriteRenderer.sprite.texture;
+            IBitmap bmp = ArrayBitmap.CreateFromTexture(tex, new Rect(r.x, r.y, r.width, r.height));
+            var polygon = BitmapHelper.CreateFromBitmap(bmp);
+            verts = SimplifyTools.DouglasPeuckerSimplify(new Vertices(polygon), simplify).Select(x => new VertexIndex(spriteRenderer.transform.TransformPoint(x))).ToList();
+            EditorUtility.SetDirty(this);
+            SceneView.currentDrawingSceneView.Repaint();
         }
 
-        if(spriteRenderer != null) {
-            if(GUILayout.Button("Save Mesh")) {
-                Mesh mesh = TriangulateMesh();
+        EditorGUILayout.Separator();
 
-                DirectoryInfo meshDir = new DirectoryInfo("Assets/Meshes");
-                if(Directory.Exists(meshDir.FullName) == false) {
-                    Directory.CreateDirectory(meshDir.FullName);
-                }
-                ScriptableObjectUtility.CreateAsset(mesh, "Meshes/" + spriteRenderer.gameObject.name + ".Mesh");
+        if (GUILayout.Button("Create Mesh from Sprite"))
+        {
+            SpriteMesh spriteMesh = new SpriteMesh();
+            spriteMesh.spriteRenderer = spriteRenderer;
+            spriteMesh.CreateSpriteMesh();
+            EditorUtility.SetDirty(this);
+            SceneView.currentDrawingSceneView.Repaint();
+        }
+
+        EditorGUILayout.Separator();
+
+        if (GUILayout.Button("Create Mesh from Polygon2D Collider"))
+        {
+            PolygonCollider2D polygonCollider = spriteRenderer.GetComponent<PolygonCollider2D>();
+            if (polygonCollider == null)
+            {
+                polygonCollider = spriteRenderer.gameObject.AddComponent<PolygonCollider2D>();
             }
+
+            PolygonMesh polygonMesh = new PolygonMesh();
+            polygonMesh.polygonCollider = polygonCollider;
+            polygonMesh.spriteRenderer = spriteRenderer;
+            polygonMesh.CreatePolygonMesh();
+            EditorUtility.SetDirty(this);
         }
+
+        GUI.enabled = true;
+        #endregion
+
+        #region Custom mesh creation
+        baseSelectDistance = EditorGUILayout.FloatField("Handle Size", baseSelectDistance);
+
+        EditorGUILayout.Separator();
+
+        GUILayout.Label("Ctrl/Shift + Click to Add/Remove Point, Ctrl/Shift + Click to Add/Remove Edge, Alt + Click to Add/Remove Holes", EditorStyles.whiteLabel);
+
+        #endregion
+
+        #region Preview Mode Button
+        GUI.enabled = true;
+        GUI.color = (previewMode) ? Color.green : Color.white;
+        if (GUILayout.Button("Preview Mode"))
+        {
+            previewMode = !previewMode;
+            if (previewMode) {
+                GeneratePreviewObject();
+            }
+            else{
+                DestroyPreviewObject();
+            }
+
+            EditorUtility.SetDirty(this);
+        }
+        GUI.color = Color.white;
+        #endregion
+
+        #region Save mesh button
+        meshName = EditorGUILayout.TextField("Mesh Name", meshName);
+
+        if (GUILayout.Button("Save Mesh"))
+        {
+            previewMode = false;
+            Mesh mesh = GetMesh();
+
+            DirectoryInfo meshDir = new DirectoryInfo("Assets/Meshes");
+            if (Directory.Exists(meshDir.FullName) == false)
+            {
+                Directory.CreateDirectory(meshDir.FullName);
+            }
+            ScriptableObjectUtility.CreateAsset(mesh, "Meshes/" + meshName + ".Mesh");
+        }
+        #endregion
     }
 
 
     public void OnDestroy() {
         SceneView.onSceneGUIDelegate -= OnSceneGUI;
+        DestroyPreviewObject();
     }
 
     public void OnSceneGUI(SceneView sceneView) {
+        if(previewMode) {
+            PreviewMode();
+            return;
+        }
         Event e = Event.current;
         Ray r = HandleUtility.GUIPointToWorldRay(e.mousePosition);
         Vector2 mousePos = r.origin; //- spriteRenderer.transform.position;
@@ -74,9 +175,10 @@ public class MeshCreator : EditorWindow {
         VisualizePolygon(sceneView);
 
         if(e.type == EventType.MouseDown && (e.button == 0 || e.button == 1)) {
+            meshDirty = true;
             EditorUtility.SetDirty(this);
 
-            // Hole operations are done when alt key is pressed
+            #region Hole operations
             if(e.alt) {
                 // If near to any hole, remove that hole
                 for(int i = 0; i < holes.Count; i++) {
@@ -89,8 +191,9 @@ public class MeshCreator : EditorWindow {
                 holes.Add(mousePos);
                 return;
             }
+            #endregion
 
-            // Vertex operations have precedence
+            #region Vertex operations
             for(int i = 0; i < verts.Count; i++) {
                 if(Vector2.Distance(mousePos, verts[i].position) < selectDistance) {
 
@@ -106,8 +209,9 @@ public class MeshCreator : EditorWindow {
                     }
                 }
             }
+            #endregion
 
-            // If a vertex is selected do segment operations
+            #region Segment operations
             if(selectedVertex >= 0) {
                 for(int i = 0; i < verts.Count; i++) {
                     if(i == selectedVertex) continue;
@@ -126,6 +230,7 @@ public class MeshCreator : EditorWindow {
                     }
                 }
             }
+            #endregion
 
             // Adding a point if control is pressed
             if(e.control) {
@@ -134,10 +239,6 @@ public class MeshCreator : EditorWindow {
                 return;
             }
         }
-
-        if(e.type == EventType.MouseDown && (e.button == 1))
-
-            sceneView.Repaint();
     }
 
     void VisualizePolygon(SceneView sceneView) {
@@ -146,11 +247,9 @@ public class MeshCreator : EditorWindow {
 
         float selectDistance = HandleUtility.GetHandleSize(mousePos) * baseSelectDistance;
 
-
-        //EditorGUI.BeginChangeCheck();
+        #region Draw vertex handles
         Handles.color = vertexColor;
         for(int i = 0; i < verts.Count; i++) {
-            // Draw vertex handles
             verts[i].position = Handles.FreeMoveHandle(
                         verts[i].position,
                         Quaternion.identity,
@@ -159,15 +258,15 @@ public class MeshCreator : EditorWindow {
                         Handles.CircleCap
                     );
         }
+        #endregion
 
-
-        //if(EditorGUI.EndChangeCheck()) sceneView.Repaint();
-
-        foreach(var hole in holes) {
+        #region Draw holes
+        Handles.color = holeColor;
+        foreach(var hole in holes)
             Handles.RectangleCap(0, hole, Quaternion.identity, selectDistance);
-        }
+        #endregion
 
-        // Draw ghost segments
+        #region Draw ghost segments
         if(selectedVertex >= 0) {
             bool foundClosestSegment = false;
             for(int i = 0; i < verts.Count; i++) {
@@ -183,8 +282,9 @@ public class MeshCreator : EditorWindow {
                 }
             }
         }
+        #endregion
 
-        // Draw defined segments - Make sure they appear above ghost segments
+        #region Draw defined segments
         Handles.color = definedSegmentColor;
         foreach(var vertex in verts) {
             foreach(var seg in vertex.segments) {
@@ -192,9 +292,50 @@ public class MeshCreator : EditorWindow {
                     Handles.DrawLine(seg.first.position, seg.second.position);
             }
         }
+        #endregion
     }
 
+    void PreviewMode() {
+        if(generatedMesh == null) {
+            Debug.Log("Mesh was not generated");
+            previewMode = false;
+            DestroyPreviewObject();
+            return;
+        }
+        Ray r = HandleUtility.GUIPointToWorldRay(Event.current.mousePosition);
+        Vector2 mousePos = r.origin;
 
+        float selectDistance = HandleUtility.GetHandleSize(mousePos) * baseSelectDistance;
+
+        Handles.color = vertexColor;
+        for(int i = 0; i < meshVertices.Length; i++) {
+            meshVertices[i] = Handles.FreeMoveHandle(
+                        meshVertices[i],
+                        Quaternion.identity,
+                        selectDistance,
+                        Vector3.zero,
+                        Handles.CircleCap
+                    );
+            generatedMesh.vertices[i] = spriteRenderer.transform.InverseTransformPoint(meshVertices[i]);
+        }
+
+        generatedMesh.vertices = meshVertices.Select(x => spriteRenderer.transform.InverseTransformPoint(x)).ToArray();
+        generatedMesh.RecalculateBounds();
+        previewMF.sharedMesh = generatedMesh;
+
+        meshDirty = true;
+
+        SceneView.currentDrawingSceneView.Repaint();
+        EditorUtility.SetDirty(previewObject);
+    }
+
+    public Mesh GetMesh() {
+        if(meshDirty || generatedMesh == null) {
+            meshDirty = false;
+            return generatedMesh = TriangulateMesh();
+        }
+        else return generatedMesh;
+    }
 
     public Mesh TriangulateMesh() {
         var tnMesh = new TriangleNet.Mesh();
@@ -220,43 +361,39 @@ public class MeshCreator : EditorWindow {
 
         tnMesh.Triangulate(input);
 
-        Mesh mesh = new Mesh();
-        mesh.vertices = localVertices;
-        mesh.triangles = tnMesh.Triangles.ToUnityMeshTriangleIndices();
-        mesh.uv = genUV(mesh.vertices);
-        mesh.RecalculateBounds();
-        mesh.RecalculateNormals();
-        return mesh;
+        try {
+            Mesh mesh = new Mesh();
+            mesh.vertices = localVertices;
+            mesh.triangles = tnMesh.Triangles.ToUnityMeshTriangleIndices();
+            mesh.uv = genUV(mesh.vertices);
+            mesh.RecalculateBounds();
+            mesh.RecalculateNormals();
+            return mesh;
+        }
+        catch {
+            Debug.LogError("Mesh topology was wrong. Make sure you dont have intersecting edges.");
+            throw;
+        }
     }
-
 
     public Vector2[] genUV(Vector3[] vertices) {
         if(spriteRenderer != null) {
-            // Get the sprite's texture dimensions as float values
             float texHeight = (float)(spriteRenderer.sprite.texture.height);
-            // Debug.Log(texHeight);
             float texWidth = (float)(spriteRenderer.sprite.texture.width);
-            // Debug.Log(texWidth);
 
-            // Get the bottom left position of the sprite renderer bounds in local space
             Vector3 botLeft = spriteRenderer.transform.InverseTransformPoint(new Vector3(spriteRenderer.bounds.min.x, spriteRenderer.bounds.min.y, 0));
 
-            // Get the sprite's texture origin from the sprite's rect as float values
             Vector2 spriteTextureOrigin;
             spriteTextureOrigin.x = (float)spriteRenderer.sprite.rect.x;
             spriteTextureOrigin.y = (float)spriteRenderer.sprite.rect.y;
 
-            // Calculate Pixels to Units using the current sprite rect width and the sprite bounds
             float pixelsToUnits = spriteRenderer.sprite.rect.width / spriteRenderer.sprite.bounds.size.x;
 
             Vector2[] uv = new Vector2[vertices.Length];
             for(int i = 0; i < vertices.Length; i++) {
-                // Apply the bottom left and lower left offset values to the vertices before applying the pixels to units 
-                // to get the pixel value
                 float x = (vertices[i].x - botLeft.x) * spriteRenderer.sprite.pixelsPerUnit;
                 float y = (vertices[i].y - botLeft.y) * spriteRenderer.sprite.pixelsPerUnit;
 
-                // Add the sprite's origin on the texture to the vertices and divide by the dimensions to get the UV
                 uv[i] = new Vector2(((x + spriteTextureOrigin.x) / texWidth), ((y + spriteTextureOrigin.y) / texHeight));
             }
             return uv;
@@ -264,6 +401,46 @@ public class MeshCreator : EditorWindow {
         else {
             return null;
         }
+    }
+
+    public void GeneratePreviewObject() {
+        DestroyPreviewObject();
+        spriteRenderer.enabled = false;
+
+        previewObject = new GameObject();
+        previewMF = previewObject.AddComponent<MeshFilter>();
+        var mr = previewObject.AddComponent<MeshRenderer>();
+        previewObject.transform.position = spriteRenderer.transform.position;
+        previewObject.transform.rotation = spriteRenderer.transform.rotation;
+        previewObject.transform.localScale = spriteRenderer.transform.localScale;
+
+        previewMF.mesh = GetMesh();
+        mr.material = new Material(Shader.Find("Unlit/Transparent"));
+        mr.sharedMaterial.mainTexture = spriteRenderer.sprite.texture;
+
+        meshVertices = previewMF.sharedMesh.vertices.Select(x => spriteRenderer.transform.TransformPoint(x)).ToArray();
+    }
+
+    public void DestroyPreviewObject() {
+        spriteRenderer.enabled = true;
+        if(previewObject != null) GameObject.DestroyImmediate(previewObject);
+        previewObject = null;
+    }
+
+    private void LoadMesh(Mesh loadMesh) {
+        // Inverse transform...
+        verts = loadMesh.vertices.Select(x => new VertexIndex(spriteRenderer.transform.TransformPoint(x))).ToList();
+
+        // Only distinct edges should be added
+        for(int i = 0; i < loadMesh.triangles.Length; i += 3) {
+            verts[loadMesh.triangles[i]].segments.Add(new Segment(verts[loadMesh.triangles[i + 1]], verts[loadMesh.triangles[i]]));
+            verts[loadMesh.triangles[i + 1]].segments.Add(new Segment(verts[loadMesh.triangles[i + 2]], verts[loadMesh.triangles[i + 1]]));
+            verts[loadMesh.triangles[i + 2]].segments.Add(new Segment(verts[loadMesh.triangles[i]], verts[loadMesh.triangles[i + 2]]));
+        }
+
+        holes = new List<Vector2>();
+
+        EditorUtility.SetDirty(this);
     }
 
     public class Segment {
