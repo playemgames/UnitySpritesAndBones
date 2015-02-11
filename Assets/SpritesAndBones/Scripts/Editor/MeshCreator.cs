@@ -13,10 +13,10 @@ using System.IO;
 public class MeshCreator : EditorWindow {
     private SpriteRenderer spriteRenderer;
 
-    private float baseSelectDistance = 0.3f;   // Square distance actually
+    private float baseSelectDistance = 0.1f;
 
     private Color ghostSegmentColor = Color.blue;
-    private Color nearSegmentColor = Color.cyan;
+    private Color nearSegmentColor = Color.red;
     private Color definedSegmentColor = Color.green;
     private Color vertexColor = Color.green;
     private Color selectedVertexColor = Color.blue;
@@ -55,58 +55,29 @@ public class MeshCreator : EditorWindow {
         SceneView.onSceneGUIDelegate += wnd.OnSceneGUI;
     }
 
-    public void OnGUI()
-    {
+    public void OnGUI() {
         GUILayout.Label("Sprite", EditorStyles.boldLabel);
 
         spriteRenderer = (SpriteRenderer)EditorGUILayout.ObjectField(spriteRenderer, typeof(SpriteRenderer), true);
 
 
-        if (spriteRenderer == null) return;
+        if(spriteRenderer == null) return;
 
         #region Auto mesh creation buttons
         GUI.enabled = !previewMode;
 
         simplify = EditorGUILayout.FloatField("Vertex Dist.", simplify);
 
-        if (GUILayout.Button("Generate Polygon from Texture"))
-        {
-            Rect r = spriteRenderer.sprite.rect;
-            Texture2D tex = spriteRenderer.sprite.texture;
-            IBitmap bmp = ArrayBitmap.CreateFromTexture(tex, new Rect(r.x, r.y, r.width, r.height));
-            var polygon = BitmapHelper.CreateFromBitmap(bmp);
-            verts = SimplifyTools.DouglasPeuckerSimplify(new Vertices(polygon), simplify).Select(x => new VertexIndex(spriteRenderer.transform.TransformPoint(x))).ToList();
+        if(GUILayout.Button("Generate Polygon from Texture")) {
+            LoadPolygonFromSprite();
+
             EditorUtility.SetDirty(this);
             SceneView.currentDrawingSceneView.Repaint();
         }
 
         EditorGUILayout.Separator();
 
-        if (GUILayout.Button("Create Mesh from Sprite"))
-        {
-            SpriteMesh spriteMesh = new SpriteMesh();
-            spriteMesh.spriteRenderer = spriteRenderer;
-            spriteMesh.CreateSpriteMesh();
-            EditorUtility.SetDirty(this);
-            SceneView.currentDrawingSceneView.Repaint();
-        }
-
-        EditorGUILayout.Separator();
-
-        if (GUILayout.Button("Create Mesh from Polygon2D Collider"))
-        {
-            PolygonCollider2D polygonCollider = spriteRenderer.GetComponent<PolygonCollider2D>();
-            if (polygonCollider == null)
-            {
-                polygonCollider = spriteRenderer.gameObject.AddComponent<PolygonCollider2D>();
-            }
-
-            PolygonMesh polygonMesh = new PolygonMesh();
-            polygonMesh.polygonCollider = polygonCollider;
-            polygonMesh.spriteRenderer = spriteRenderer;
-            polygonMesh.CreatePolygonMesh();
-            EditorUtility.SetDirty(this);
-        }
+        // TODO: Add mesh creation from polygon collider 2d?
 
         GUI.enabled = true;
         #endregion
@@ -123,13 +94,12 @@ public class MeshCreator : EditorWindow {
         #region Preview Mode Button
         GUI.enabled = true;
         GUI.color = (previewMode) ? Color.green : Color.white;
-        if (GUILayout.Button("Preview Mode"))
-        {
+        if(GUILayout.Button("Preview Mode")) {
             previewMode = !previewMode;
-            if (previewMode) {
+            if(previewMode) {
                 GeneratePreviewObject();
             }
-            else{
+            else {
                 DestroyPreviewObject();
             }
 
@@ -141,21 +111,18 @@ public class MeshCreator : EditorWindow {
         #region Save mesh button
         meshName = EditorGUILayout.TextField("Mesh Name", meshName);
 
-        if (GUILayout.Button("Save Mesh"))
-        {
+        if(GUILayout.Button("Save Mesh")) {
             previewMode = false;
             Mesh mesh = GetMesh();
 
             DirectoryInfo meshDir = new DirectoryInfo("Assets/Meshes");
-            if (Directory.Exists(meshDir.FullName) == false)
-            {
+            if(Directory.Exists(meshDir.FullName) == false) {
                 Directory.CreateDirectory(meshDir.FullName);
             }
             ScriptableObjectUtility.CreateAsset(mesh, "Meshes/" + meshName + ".Mesh");
         }
         #endregion
     }
-
 
     public void OnDestroy() {
         SceneView.onSceneGUIDelegate -= OnSceneGUI;
@@ -194,39 +161,63 @@ public class MeshCreator : EditorWindow {
             #endregion
 
             #region Vertex operations
-            for(int i = 0; i < verts.Count; i++) {
-                if(Vector2.Distance(mousePos, verts[i].position) < selectDistance) {
+            float minSelectDistance = Mathf.Sqrt(selectDistance);
+            int minIndex = -1;
+            float minValue = float.MaxValue;
+            float distance = 0;
 
-                    if(e.shift) {
-                        verts[i].deleted = true;
-                        verts.RemoveAt(i);
-                        selectedVertex = -1;
-                        return;
-                    }
-                    else if(!(e.control || e.alt)) {
-                        selectedVertex = i;
-                        return;
-                    }
+            // Find the vertex with minimum distance from mouse
+            for(int i = 0; i < verts.Count; i++) {
+                if(i == selectedVertex) continue;
+                distance = Vector2.Distance(mousePos, verts[i].position);
+                if(distance < minValue) {
+                    minValue = distance;
+                    minIndex = i;
+                }
+            }
+
+            if(minIndex >= 0 && minValue < minSelectDistance) {
+                if(e.shift) {
+                    verts[minIndex].deleted = true;
+                    verts.RemoveAt(minIndex);
+                    selectedVertex = -1;
+                    return;
+                }
+                else if(!(e.control || e.alt)) {
+                    selectedVertex = minIndex;
+                    return;
                 }
             }
             #endregion
 
             #region Segment operations
             if(selectedVertex >= 0) {
+                minSelectDistance = Mathf.Sqrt(selectDistance);
+                minIndex = -1;
+                minValue = float.MaxValue;
+                distance = 0;
+
+                // Find the segment with minimum distance from mouse
                 for(int i = 0; i < verts.Count; i++) {
                     if(i == selectedVertex) continue;
-                    if(HandleUtility.DistancePointToLineSegment(mousePos, verts[i].position, verts[selectedVertex].position) < selectDistance) {
-                        if(e.shift) {
-                            // Lazy deletion
-                            verts[selectedVertex].segments.RemoveAll(x => x.first == verts[i] || x.second == verts[i]);
-                            verts[i].segments.RemoveAll(x => x.first == verts[selectedVertex] || x.second == verts[selectedVertex]);
-                            return;
-                        }
-                        else if(e.control) {
-                            var seg = new Segment(verts[i], verts[selectedVertex]);
-                            verts[selectedVertex].segments.Add(seg);
-                            return;
-                        }
+                    distance = HandleUtility.DistancePointToLineSegment(mousePos, verts[i].position, verts[selectedVertex].position);
+                    if(distance < minValue) {
+                        minValue = distance;
+                        minIndex = i;
+                    }
+                }
+
+                if(minIndex >= 0 && minValue < minSelectDistance) {
+                    if(e.shift) {
+                        // Lazy deletion
+                        verts[selectedVertex].segments.RemoveAll(x => x.first == verts[minIndex] || x.second == verts[minIndex]);
+                        verts[minIndex].segments.RemoveAll(x => x.first == verts[selectedVertex] || x.second == verts[selectedVertex]);
+                        return;
+                    }
+                    else if(e.control) {
+                        var seg = new Segment(verts[minIndex], verts[selectedVertex]);
+                        verts[selectedVertex].segments.Add(seg);
+                        return;
                     }
                 }
             }
@@ -237,6 +228,10 @@ public class MeshCreator : EditorWindow {
                 verts.Add(new VertexIndex(mousePos));
                 selectedVertex = verts.Count - 1;
                 return;
+            }
+            // If nothing is done, deselect the vertex
+            else {
+                selectedVertex = -1;
             }
         }
     }
@@ -378,6 +373,8 @@ public class MeshCreator : EditorWindow {
 
     public Vector2[] genUV(Vector3[] vertices) {
         if(spriteRenderer != null) {
+            var prevRot = spriteRenderer.transform.rotation;
+
             float texHeight = (float)(spriteRenderer.sprite.texture.height);
             float texWidth = (float)(spriteRenderer.sprite.texture.width);
 
@@ -396,6 +393,8 @@ public class MeshCreator : EditorWindow {
 
                 uv[i] = new Vector2(((x + spriteTextureOrigin.x) / texWidth), ((y + spriteTextureOrigin.y) / texHeight));
             }
+
+            spriteRenderer.transform.rotation = prevRot;
             return uv;
         }
         else {
@@ -408,6 +407,7 @@ public class MeshCreator : EditorWindow {
         spriteRenderer.enabled = false;
 
         previewObject = new GameObject();
+        Selection.activeGameObject = previewObject;
         previewMF = previewObject.AddComponent<MeshFilter>();
         var mr = previewObject.AddComponent<MeshRenderer>();
         previewObject.transform.position = spriteRenderer.transform.position;
@@ -422,16 +422,16 @@ public class MeshCreator : EditorWindow {
     }
 
     public void DestroyPreviewObject() {
+        Selection.activeGameObject = spriteRenderer.gameObject;
         spriteRenderer.enabled = true;
         if(previewObject != null) GameObject.DestroyImmediate(previewObject);
         previewObject = null;
     }
 
     private void LoadMesh(Mesh loadMesh) {
-        // Inverse transform...
         verts = loadMesh.vertices.Select(x => new VertexIndex(spriteRenderer.transform.TransformPoint(x))).ToList();
 
-        // Only distinct edges should be added
+        // TODO: Only distinct edges should be added, otherwise behavior is unknown
         for(int i = 0; i < loadMesh.triangles.Length; i += 3) {
             verts[loadMesh.triangles[i]].segments.Add(new Segment(verts[loadMesh.triangles[i + 1]], verts[loadMesh.triangles[i]]));
             verts[loadMesh.triangles[i + 1]].segments.Add(new Segment(verts[loadMesh.triangles[i + 2]], verts[loadMesh.triangles[i + 1]]));
@@ -441,6 +441,36 @@ public class MeshCreator : EditorWindow {
         holes = new List<Vector2>();
 
         EditorUtility.SetDirty(this);
+    }
+
+    private void LoadPolygonFromSprite() {
+        Rect r = spriteRenderer.sprite.rect;
+        Texture2D tex = spriteRenderer.sprite.texture;
+        IBitmap bmp = ArrayBitmap.CreateFromTexture(tex, new Rect(r.x, r.y, r.width, r.height));
+        var polygon = BitmapHelper.CreateFromBitmap(bmp);
+        polygon = SimplifyTools.DouglasPeuckerSimplify(new Vertices(polygon), simplify).ToArray();
+
+        Rect bounds = GetBounds(polygon);
+
+        float scalex = spriteRenderer.sprite.bounds.size.x / bounds.width;
+        float scaley = spriteRenderer.sprite.bounds.size.y / bounds.height;
+
+        polygon = polygon.Select(v => new Vector2(v.x * scalex, v.y * scaley) - (bounds.center * scalex) + (Vector2)spriteRenderer.sprite.bounds.center).ToArray();
+        verts = polygon.Select(v => new VertexIndex(spriteRenderer.transform.TransformPoint(v))).ToList();
+
+        verts[0].segments.Add(new Segment(verts[verts.Count - 1], verts[0]));
+        for(int i=1; i < verts.Count; i++) {
+            verts[i].segments.Add(new Segment(verts[i - 1], verts[i]));
+        }
+    }
+
+    private static Rect GetBounds(IEnumerable<Vector2> poly) {
+        float bx1 = poly.Min(p => p.x);
+        float by1 = poly.Min(p => p.y);
+        float bx2 = poly.Max(p => p.x);
+        float by2 = poly.Max(p => p.y);
+
+        return new Rect(bx1, by1, bx2 - bx1, by2 - by1);
     }
 
     public class Segment {
