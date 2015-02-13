@@ -32,6 +32,7 @@ public class MeshCreator : EditorWindow {
     private float simplify = 1f;
     private string meshName = "GeneratedMesh";
     private bool previewMode = false;
+    private Material previewMaterial = new Material(Shader.Find("Unlit/Transparent"));
 
     private Mesh generatedMesh = null;
     private Vector3[] meshVertices = null;
@@ -79,7 +80,16 @@ public class MeshCreator : EditorWindow {
 
         EditorGUILayout.Separator();
 
-        // TODO: Add mesh creation from polygon collider 2d?
+        if(GUILayout.Button("Reset Points")) {
+            verts = new List<Vertex>();
+            segments = new List<Segment>();
+            holes = new List<Vector2>();
+
+            EditorUtility.SetDirty(this);
+            SceneView.currentDrawingSceneView.Repaint();
+        }
+
+        EditorGUILayout.Separator();
 
         GUI.enabled = true;
         #endregion
@@ -325,17 +335,16 @@ public class MeshCreator : EditorWindow {
     private Vector2[] genUV(Vector3[] vertices) {
         if(spriteRenderer != null) {
             var prevRot = spriteRenderer.transform.rotation;
+            spriteRenderer.transform.rotation = Quaternion.identity;
 
             float texHeight = (float)(spriteRenderer.sprite.texture.height);
             float texWidth = (float)(spriteRenderer.sprite.texture.width);
 
-            Vector3 botLeft = spriteRenderer.transform.InverseTransformPoint(new Vector3(spriteRenderer.bounds.min.x, spriteRenderer.bounds.min.y, 0));
+            Vector3 botLeft = new Vector3(spriteRenderer.bounds.min.x, spriteRenderer.bounds.min.y, 0);
 
             Vector2 spriteTextureOrigin;
             spriteTextureOrigin.x = (float)spriteRenderer.sprite.rect.x;
             spriteTextureOrigin.y = (float)spriteRenderer.sprite.rect.y;
-
-            float pixelsToUnits = spriteRenderer.sprite.rect.width / spriteRenderer.sprite.bounds.size.x;
 
             Vector2[] uv = new Vector2[vertices.Length];
             for(int i = 0; i < vertices.Length; i++) {
@@ -366,7 +375,7 @@ public class MeshCreator : EditorWindow {
         previewObject.transform.localScale = spriteRenderer.transform.localScale;
 
         previewMF.mesh = GetMesh();
-        mr.material = new Material(Shader.Find("Unlit/Transparent"));
+        mr.sharedMaterial = previewMaterial;
         mr.sharedMaterial.mainTexture = spriteRenderer.sprite.texture;
 
         meshVertices = previewMF.sharedMesh.vertices.Select(x => spriteRenderer.transform.TransformPoint(x)).ToArray();
@@ -375,7 +384,9 @@ public class MeshCreator : EditorWindow {
     private void DestroyPreviewObject() {
         Selection.activeGameObject = spriteRenderer.gameObject;
         spriteRenderer.enabled = true;
-        if(previewObject != null) GameObject.DestroyImmediate(previewObject);
+        if(previewObject != null) {
+            GameObject.DestroyImmediate(previewObject);
+        }
         previewObject = null;
     }
 
