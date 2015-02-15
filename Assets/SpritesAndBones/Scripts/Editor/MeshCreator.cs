@@ -340,7 +340,7 @@ public class MeshCreator : EditorWindow {
             float texHeight = (float)(spriteRenderer.sprite.texture.height);
             float texWidth = (float)(spriteRenderer.sprite.texture.width);
 
-            Vector3 botLeft = new Vector3(spriteRenderer.bounds.min.x, spriteRenderer.bounds.min.y, 0);
+            Vector3 botLeft = spriteRenderer.transform.InverseTransformPoint(new Vector3(spriteRenderer.bounds.min.x, spriteRenderer.bounds.min.y, 0));
 
             Vector2 spriteTextureOrigin;
             spriteTextureOrigin.x = (float)spriteRenderer.sprite.rect.x;
