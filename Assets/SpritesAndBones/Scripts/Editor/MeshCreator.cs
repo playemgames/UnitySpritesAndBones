@@ -4,10 +4,8 @@ using System.Collections.Generic;
 using System.Linq;
 using FarseerPhysics.Common.PolygonManipulation;
 using FarseerPhysics.Common;
-#if UNITY_EDITOR
 using UnityEditor;
 using System.IO;
-#endif
 
 [ExecuteInEditMode]
 public class MeshCreator : EditorWindow {
@@ -15,23 +13,27 @@ public class MeshCreator : EditorWindow {
     private SpriteRenderer spriteRenderer;
 
     private float baseSelectDistance = 0.1f;
+    private float changedBaseSelectDistance = 0.1f;
 
+    #region Gizmo Colors
     private Color ghostSegmentColor = Color.cyan;
     private Color nearSegmentColor = Color.red;
     private Color definedSegmentColor = Color.green;
     private Color vertexColor = Color.green;
     private Color holeColor = Color.red;
+    #endregion
 
     private List<Vertex> verts = new List<Vertex>();
     private List<Segment> segments = new List<Segment>();
     private List<Vector2> holes = new List<Vector2>();
 
-    private bool midMouseDrag = false;
+    private bool segmentDefiningDrag = false;
     private int dragStartIndex = -1;
 
     private float simplify = 1f;
     private string meshName = "GeneratedMesh";
     private bool previewMode = false;
+    private bool hideGizmos = false;
     private Material previewMaterial = new Material(Shader.Find("Unlit/Transparent"));
 
     private Mesh generatedMesh = null;
@@ -40,6 +42,10 @@ public class MeshCreator : EditorWindow {
 
     private GameObject previewObject = null;
     private MeshFilter previewMF = null;
+
+    private GUIContent[] subdivideContents = new GUIContent[] { new GUIContent("2"), new GUIContent("3"), new GUIContent("4"), new GUIContent("6") };
+    private int[] subdivideContentValues = new int[] { 2, 3, 4, 6 };
+    private int subdivideValue = 2;
 
     [MenuItem("Sprites And Bones/Mesh Creator")]
     protected static void ShowSkinMeshEditor() {
@@ -72,21 +78,21 @@ public class MeshCreator : EditorWindow {
         simplify = EditorGUILayout.FloatField("Vertex Dist.", simplify);
 
         if(GUILayout.Button("Generate Polygon from Texture")) {
-            LoadPolygonFromSprite();
-
-            EditorUtility.SetDirty(this);
-            SceneView.currentDrawingSceneView.Repaint();
+            if(Reset())
+                LoadPolygonFromSprite();
         }
 
         EditorGUILayout.Separator();
 
         if(GUILayout.Button("Reset Points")) {
-            verts = new List<Vertex>();
-            segments = new List<Segment>();
-            holes = new List<Vector2>();
+            Reset();
+        }
 
-            EditorUtility.SetDirty(this);
-            SceneView.currentDrawingSceneView.Repaint();
+        EditorGUILayout.Separator();
+
+        subdivideValue = EditorGUILayout.IntPopup(subdivideValue, subdivideContents, subdivideContentValues); 
+        if(GUILayout.Button("Subdivide Mesh")) {
+            Subdivide(subdivideValue);
         }
 
         EditorGUILayout.Separator();
@@ -95,19 +101,31 @@ public class MeshCreator : EditorWindow {
         #endregion
 
         #region Custom mesh creation
-        baseSelectDistance = EditorGUILayout.FloatField("Handle Size", baseSelectDistance);
+        changedBaseSelectDistance = EditorGUILayout.Slider("Handle Size", baseSelectDistance, 0, 1);
+        if(baseSelectDistance != changedBaseSelectDistance) {
+            baseSelectDistance = changedBaseSelectDistance;
+            EditorUtility.SetDirty(this);
+            SceneView.currentDrawingSceneView.Repaint();
+        }
 
         EditorGUILayout.Separator();
 
-        GUILayout.Label("Ctrl + Click to Add Point", EditorStyles.whiteLabel);
-        GUILayout.Label("Shift + Click to Remove Point or Edge", EditorStyles.whiteLabel);
-        GUILayout.Label("Ctrl + Drag to Add Edge", EditorStyles.whiteLabel);
-        GUILayout.Label("Alt + Click to Add or Remove Holes", EditorStyles.whiteLabel);
+        GUILayout.Label("[Ctrl + Click] to Add Point", EditorStyles.whiteLabel);
+        GUILayout.Label("[Shift + Click] to Remove Point or Edge", EditorStyles.whiteLabel);
+        GUILayout.Label("[Right Click + Drag] to Add Edge", EditorStyles.whiteLabel);
+        GUILayout.Label("[Alt + Click] to Mark / Demark Area as Hole", EditorStyles.whiteLabel);
 
         #endregion
 
         #region Preview Mode Button
         GUI.enabled = true;
+
+        if(hideGizmos != EditorGUILayout.Toggle("Hide gizmos", hideGizmos)) {
+            hideGizmos = !hideGizmos;
+            EditorUtility.SetDirty(this);
+            SceneView.currentDrawingSceneView.Repaint();
+        }
+
         GUI.color = (previewMode) ? Color.green : Color.white;
         if(GUILayout.Button("Preview Mode")) {
             previewMode = !previewMode;
@@ -121,6 +139,7 @@ public class MeshCreator : EditorWindow {
             EditorUtility.SetDirty(this);
         }
         GUI.color = Color.white;
+        EditorGUILayout.Separator();
         #endregion
 
         #region Save mesh button
@@ -130,11 +149,8 @@ public class MeshCreator : EditorWindow {
             previewMode = false;
             Mesh mesh = GetMesh();
 
-            DirectoryInfo meshDir = new DirectoryInfo("Assets/Meshes");
-            if(Directory.Exists(meshDir.FullName) == false) {
-                Directory.CreateDirectory(meshDir.FullName);
-            }
-            ScriptableObjectUtility.CreateAsset(mesh, "Meshes/" + meshName + ".Mesh");
+            mesh.name = string.IsNullOrEmpty(meshName) ? spriteRenderer.name : meshName;
+            AssetUtility.CreateOrReplaceAssetAtPath(mesh, "Meshes/" + mesh.name);
         }
         #endregion
     }
@@ -146,17 +162,16 @@ public class MeshCreator : EditorWindow {
     }
 
     public void OnSceneGUI(SceneView sceneView) {
-        if(previewMode) {
-            PreviewMode();
-            return;
-        }
         Event e = Event.current;
         Ray r = HandleUtility.GUIPointToWorldRay(e.mousePosition);
         Vector2 mousePos = r.origin; //- spriteRenderer.transform.position;
 
-        VisualizePolygon(sceneView);
+        if(previewMode) {
+            if(!hideGizmos && e.type != EventType.MouseMove) PreviewMode();
+            return;
+        }
 
-        if(e.type == EventType.MouseDown || e.type == EventType.KeyDown) {
+        if(e.type == EventType.MouseDown) {
             meshDirty = true;
             EditorUtility.SetDirty(this);
             //sceneView.Repaint();
@@ -164,47 +179,63 @@ public class MeshCreator : EditorWindow {
             #region Hole operations
             if(e.alt && e.type == EventType.MouseDown) {
                 AddOrRemoveHole(mousePos);
-                return;
-            }
-            #endregion
-
-            #region Segment Defining
-            else if(!midMouseDrag && e.control && e.type == EventType.KeyDown) {
-                midMouseDrag = true;
-                var dragStart = GetVertexNearPosition(mousePos);
-                dragStartIndex = dragStart == null ? -1 : dragStart.index;
+                e.Use();
             }
             #endregion
 
             #region Vertex operations
             else if(e.shift && e.type == EventType.MouseDown) {
                 RemoveVertexOrSegment(mousePos);
-                return;
+                e.Use();
             }
             #endregion
 
+            #region Adding vertices
             // Adding a point if control is pressed
             else if(e.control && e.type == EventType.MouseDown) {
-                verts.Add(new Vertex(mousePos));
-                return;
+                var newVert = new Vertex(mousePos);
+                verts.Add(newVert);
+                e.Use();
+
+                // Remove old segment and add 2 new segments if new point is added near a segment
+                var seg = GetSegmentNearPosition(mousePos);
+                if(seg != null) {
+                    segments.RemoveAt(seg.index);
+                    seg.deleted = true;
+                    AddSegment(newVert, seg.first);
+                    AddSegment(newVert, seg.second);
+                }
             }
+            #endregion
+
+            #region Segment Defining
+            else if(!segmentDefiningDrag && e.button == 1 && e.type == EventType.MouseDown) {
+                segmentDefiningDrag = true;
+                var dragStart = GetVertexNearPosition(mousePos);
+                dragStartIndex = dragStart == null ? -1 : dragStart.index;
+                if(dragStartIndex >= 0) e.Use();        // To prevent scene drag with right mouse drag
+            }
+            #endregion
         }
-        else if(e.type == EventType.KeyUp) {
-            if(midMouseDrag && dragStartIndex >= 0) {
+        else if(e.type == EventType.MouseUp) {
+            if(segmentDefiningDrag && dragStartIndex >= 0) {
                 var endVert = GetVertexNearPosition(mousePos);
                 if(endVert != null && endVert != verts[dragStartIndex]) {
                     AddSegment(endVert, verts[dragStartIndex]);
                 }
             }
-            midMouseDrag = false;
+            segmentDefiningDrag = false;
         }
-        else if(e.type == EventType.MouseMove) {
+        else if(e.type == EventType.MouseMove || e.type == EventType.MouseDrag) {
             sceneView.Repaint();
         }
+
+        if(!hideGizmos) VisualizePolygon(sceneView);
     }
 
     void VisualizePolygon(SceneView sceneView) {
-        Ray r = HandleUtility.GUIPointToWorldRay(Event.current.mousePosition);
+        Event e = Event.current;
+        Ray r = HandleUtility.GUIPointToWorldRay(e.mousePosition);
         Vector2 mousePos = r.origin;
 
         float selectDistance = HandleUtility.GetHandleSize(mousePos) * baseSelectDistance;
@@ -243,7 +274,7 @@ public class MeshCreator : EditorWindow {
         #endregion
 
         #region Draw currently defining edge
-        if(midMouseDrag && dragStartIndex >= 0) {
+        if(segmentDefiningDrag && dragStartIndex >= 0) {
             Handles.color = ghostSegmentColor;
             var endVert = GetVertexNearPosition(mousePos);
             if(endVert != null) Handles.DrawLine(verts[dragStartIndex].position, endVert.position);
@@ -382,23 +413,25 @@ public class MeshCreator : EditorWindow {
     }
 
     private void DestroyPreviewObject() {
-        Selection.activeGameObject = spriteRenderer.gameObject;
-        spriteRenderer.enabled = true;
-        if(previewObject != null) {
-            GameObject.DestroyImmediate(previewObject);
+        if(spriteRenderer != null) {
+            Selection.activeGameObject = spriteRenderer.gameObject;
+            spriteRenderer.enabled = true;
         }
+        if(previewObject != null)
+            GameObject.DestroyImmediate(previewObject);
         previewObject = null;
     }
 
     private void LoadMesh(Mesh loadMesh) {
         verts = loadMesh.vertices.Select(x => new Vertex(spriteRenderer.transform.TransformPoint(x))).ToList();
 
+        /*
         // TODO: Only distinct edges should be added, otherwise behavior is unknown
         for(int i = 0; i < loadMesh.triangles.Length; i += 3) {
             AddSegment(verts[loadMesh.triangles[i + 1]], verts[loadMesh.triangles[i]]);
             AddSegment(verts[loadMesh.triangles[i + 2]], verts[loadMesh.triangles[i + 1]]);
             AddSegment(verts[loadMesh.triangles[i]], verts[loadMesh.triangles[i + 2]]);
-        }
+        }*/
 
         holes = new List<Vector2>();
 
@@ -495,6 +528,11 @@ public class MeshCreator : EditorWindow {
         return;
     }
 
+    private void AddSegment(Vertex first, Vertex second) {
+        if(!segments.Any(s => (s.first == first || s.second == first) && (s.second == second || s.first == second) && !s.IsDeleted()))
+            segments.Add(new Segment(first, second));
+    }
+
     private void RemoveVertexOrSegment(Vector2 position) {
         var seg = GetSegmentNearPosition(position);
         if(seg != null) {
@@ -506,17 +544,36 @@ public class MeshCreator : EditorWindow {
         if(vert != null) RemoveVertex(vert.index);
     }
 
-    private void AddSegment(Vertex first, Vertex second) {
-        if(!segments.Any(s => (s.first == first || s.second == first) && (s.second == second || s.first == second) && !s.IsDeleted()))
-            segments.Add(new Segment(first, second));
-    }
     private void RemoveSegment(int index) {
         segments[index].deleted = true;
         segments.RemoveAt(index);
     }
+
     private void RemoveVertex(int index) {
         verts[index].deleted = true;
         verts.RemoveAt(index);
+    }
+
+    private void Subdivide(int subdivideValue) {
+        Mesh mesh = GetMesh();
+        MeshHelper.Subdivide(mesh, subdivideValue);
+        LoadMesh(mesh);
+    }
+
+    private bool Reset() {
+        if(verts == null || verts.Count == 0 || EditorUtility.DisplayDialog("Reset points", "Are you sure? This operation will reset points.", "Yes", "Cancel")) {
+            verts = new List<Vertex>();
+            segments = new List<Segment>();
+            holes = new List<Vector2>();
+
+            meshDirty = true;
+            generatedMesh = null;
+            EditorUtility.SetDirty(this);
+            SceneView.currentDrawingSceneView.Repaint();
+
+            return true;
+        }
+        return false;
     }
 
     public class Segment {
