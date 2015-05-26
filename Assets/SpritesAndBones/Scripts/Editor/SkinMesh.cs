@@ -560,7 +560,6 @@ public class SkinMesh : EditorWindow {
 			spriteTextureOrigin.y = (float)spriteRenderer.sprite.rect.y;
 
 			// Calculate Pixels to Units using the current sprite rect width and the sprite bounds
-			float pixelsToUnits = spriteRenderer.sprite.rect.width / spriteRenderer.sprite.bounds.size.x;
 
 			Vector2[] uv = new Vector2[vertices.Length];
 			for (int i = 0; i<vertices.Length; i++) {
@@ -700,7 +699,6 @@ public class SkinMesh : EditorWindow {
 			//transform vertices
 			points = new Vector2[triangleMesh.Vertices.Count];
 			Vector3[] vertices = new Vector3[triangleMesh.Vertices.Count];
-			Vector2[] uvs = new Vector2[triangleMesh.Vertices.Count];
 			Vector3[] normals = new Vector3[triangleMesh.Vertices.Count];
 
 			int n = 0;
@@ -766,7 +764,6 @@ public class SkinMesh : EditorWindow {
 			//transform vertices
 			points = new Vector2[triangleMesh.Vertices.Count];
 			Vector3[] vertices = new Vector3[triangleMesh.Vertices.Count];
-			Vector2[] uvs = new Vector2[triangleMesh.Vertices.Count];
 			Vector3[] normals = new Vector3[triangleMesh.Vertices.Count];
 
 			int n = 0;
